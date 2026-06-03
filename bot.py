@@ -28,10 +28,8 @@ if not BOT_TOKEN:
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# MongoDB URI – replace with your own or set env var
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://Anish_Gupta:Anish_Gupta@studyonemanagerbot.bnbknvf.mongodb.net/?appName=StudyOneManagerBot")
 
-# API endpoints (can be overridden by env)
 KEY_API_URL = os.getenv("KEY_API_URL", "https://study-one-access.vercel.app/access/token=Anuj%40%23%E2%82%B9_%26123")
 ANALYTICS_API = os.getenv("ANALYTICS_API", "https://study-one-access.vercel.app/analytics?token=Anuj%40%23%E2%82%B9_%26123")
 CLEAR_API = os.getenv("CLEAR_API", "https://study-one-access.vercel.app/clear?token=Anuj%40%23%E2%82%B9_%26123")
@@ -41,14 +39,14 @@ SHORTNER_API = os.getenv("SHORTNER_API", "6351aaa9474766bb1f8575ba24a9897c276198
 
 # ---------- MongoDB Initialization ----------
 mongo_client = AsyncIOMotorClient(MONGO_URI)
-db = mongo_client.telegram_bot  # database name
+db = mongo_client.telegram_bot
 users_col = db.users
 tokens_col = db.tokens
 apps_col = db.apps
 channels_col = db.channels
 settings_col = db.settings
 
-# ---------- Global In-Memory Cache (for speed) ----------
+# ---------- In-Memory Cache ----------
 users = {}
 tokens = {}
 apps = []
@@ -83,31 +81,25 @@ settings = {
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------- Database Load/Save Functions ----------
+# ---------- Database Functions ----------
 async def load_data_from_db():
     global users, tokens, apps, channels, settings
-    # Load users
     users.clear()
     async for doc in users_col.find({}):
         users[doc["_id"]] = {"first_name": doc["first_name"], "points": doc["points"]}
-    # Load tokens
     tokens.clear()
     async for doc in tokens_col.find({}):
         tokens[doc["_id"]] = {"user_id": doc["user_id"], "used": doc["used"]}
-    # Load apps
     apps.clear()
     async for doc in apps_col.find({}):
         apps.append({"name": doc["name"], "url": doc["url"]})
-    # Load channels
     channels.clear()
     async for doc in channels_col.find({}):
         channels.append({"id": doc["id"], "url": doc["url"], "name": doc["name"]})
-    # Load settings
     settings_doc = await settings_col.find_one({"_id": "settings"})
     if settings_doc:
         settings.update(settings_doc["data"])
     else:
-        # insert default settings
         await settings_col.insert_one({"_id": "settings", "data": settings})
 
 async def save_user(user_id, data):
@@ -315,7 +307,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(welcome, parse_mode="HTML", reply_markup=main_menu_keyboard())
     else:
         users[user_id]["first_name"] = first_name
-        await save_user(user_id, {"first_name": first_name})  # update name
+        await save_user(user_id, {"first_name": first_name})
         await update.message.reply_text(f"👋 Welcome back, {first_name}!", reply_markup=main_menu_keyboard())
 
     # Process referral
@@ -337,7 +329,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ Link already used or invalid.")
 
-# ---------- Check join callback ----------
 async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -361,7 +352,6 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await query.answer("❌ You haven't joined all channels yet. Please join them first.", show_alert=True)
 
-# ---------- Main menu callbacks ----------
 async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -480,7 +470,6 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     await query.edit_message_text("🔧 <b>Admin Panel</b>", parse_mode="HTML", reply_markup=admin_keyboard())
 
-# --- Admin Apps ---
 async def admin_apps_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -538,7 +527,6 @@ async def admin_list_apps(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "No apps."
     await query.edit_message_text(text, reply_markup=admin_back_panel_kb())
 
-# --- Admin Shortner ---
 async def admin_shortner_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -580,7 +568,6 @@ async def set_tutorial_url_value(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text("✅ Tutorial URL saved.", reply_markup=admin_back_panel_kb())
     return ConversationHandler.END
 
-# --- Admin Key ---
 async def admin_key_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -636,7 +623,6 @@ async def premium_validity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}", reply_markup=admin_back_panel_kb())
     return ConversationHandler.END
 
-# --- Admin Analytics ---
 async def admin_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -664,7 +650,6 @@ async def admin_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await query.edit_message_text(f"❌ Error: {e}", reply_markup=admin_back_panel_kb())
 
-# --- Admin Force Join ---
 async def admin_forcejoin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -773,7 +758,6 @@ async def fj_list_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "No channels."
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=admin_back_panel_kb())
 
-# --- Admin Broadcast ---
 async def admin_broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -805,13 +789,12 @@ class HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-# ---------- Main entry ----------
+# ---------- Main entry (fixed event loop) ----------
 async def main_async():
-    # Load data from MongoDB into caches
     await load_data_from_db()
     print("Data loaded from MongoDB")
 
-    # Start health server in background thread
+    # Start health server
     Thread(target=run_health_server, daemon=True).start()
 
     application = Application.builder().token(BOT_TOKEN).build()
@@ -845,7 +828,7 @@ async def main_async():
     application.add_handler(CallbackQueryHandler(fj_del_channel, pattern="^delch_"))
     application.add_handler(CallbackQueryHandler(fj_list_channels, pattern="^fj_list$"))
 
-    # Conversation handlers with per_message=True to avoid warnings
+    # Conversation handlers (with per_message=True to avoid warnings)
     conv_key = ConversationHandler(
         entry_points=[CallbackQueryHandler(key_get_callback, pattern="^key_get$")],
         states={STATE_KEY_DEVICE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_device_id)]},
@@ -935,17 +918,12 @@ async def main_async():
     )
     application.add_handler(conv_tutorial)
 
-    # Start polling
+    # Start polling – this will run forever
     await application.run_polling()
 
 def main():
-    # Create and set event loop for Python 3.14+
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(main_async())
-    finally:
-        loop.close()
+    # asyncio.run() creates a new event loop and closes it properly
+    asyncio.run(main_async())
 
 if __name__ == "__main__":
     main()
