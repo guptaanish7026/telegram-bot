@@ -5,7 +5,7 @@ import string
 import json
 import base64
 import logging
-import asyncio  # <-- ADDED
+import asyncio
 import requests
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -19,6 +19,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # ---------- Environment Variables ----------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -27,6 +28,10 @@ if not BOT_TOKEN:
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
+# MongoDB URI – replace with your own or set env var
+MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://Anish_Gupta:Anish_Gupta@studyonemanagerbot.bnbknvf.mongodb.net/?appName=StudyOneManagerBot")
+
+# API endpoints (can be overridden by env)
 KEY_API_URL = os.getenv("KEY_API_URL", "https://study-one-access.vercel.app/access/token=Anuj%40%23%E2%82%B9_%26123")
 ANALYTICS_API = os.getenv("ANALYTICS_API", "https://study-one-access.vercel.app/analytics?token=Anuj%40%23%E2%82%B9_%26123")
 CLEAR_API = os.getenv("CLEAR_API", "https://study-one-access.vercel.app/clear?token=Anuj%40%23%E2%82%B9_%26123")
@@ -34,15 +39,20 @@ MEDIA_API_URL = os.getenv("MEDIA_API_URL", "https://study-one-access.vercel.app/
 SHORTNER_URL = os.getenv("SHORTNER_URL", "https://vplink.in/api")
 SHORTNER_API = os.getenv("SHORTNER_API", "6351aaa9474766bb1f8575ba24a9897c2761985f")
 
-# ---------- Global Storage ----------
+# ---------- MongoDB Initialization ----------
+mongo_client = AsyncIOMotorClient(MONGO_URI)
+db = mongo_client.telegram_bot  # database name
+users_col = db.users
+tokens_col = db.tokens
+apps_col = db.apps
+channels_col = db.channels
+settings_col = db.settings
+
+# ---------- Global In-Memory Cache (for speed) ----------
 users = {}
 tokens = {}
 apps = []
-channels = [
-    {"id": "-1003742727969", "url": "https://t.me/+OSTuiUllTBE5NmU1", "name": "Channel 1"},
-    {"id": "-1003939389021", "url": "https://t.me/+kqvEmz3m4m4yZGI1", "name": "Channel 2"},
-    {"id": "-1003492884064", "url": "https://t.me/+O7UlwkJ7YA83YTU1", "name": "Channel 3"},
-]
+channels = []
 settings = {
     "key_validity": 24,
     "shortner_url": SHORTNER_URL,
@@ -72,6 +82,52 @@ settings = {
 # ---------- Logging ----------
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ---------- Database Load/Save Functions ----------
+async def load_data_from_db():
+    global users, tokens, apps, channels, settings
+    # Load users
+    users.clear()
+    async for doc in users_col.find({}):
+        users[doc["_id"]] = {"first_name": doc["first_name"], "points": doc["points"]}
+    # Load tokens
+    tokens.clear()
+    async for doc in tokens_col.find({}):
+        tokens[doc["_id"]] = {"user_id": doc["user_id"], "used": doc["used"]}
+    # Load apps
+    apps.clear()
+    async for doc in apps_col.find({}):
+        apps.append({"name": doc["name"], "url": doc["url"]})
+    # Load channels
+    channels.clear()
+    async for doc in channels_col.find({}):
+        channels.append({"id": doc["id"], "url": doc["url"], "name": doc["name"]})
+    # Load settings
+    settings_doc = await settings_col.find_one({"_id": "settings"})
+    if settings_doc:
+        settings.update(settings_doc["data"])
+    else:
+        # insert default settings
+        await settings_col.insert_one({"_id": "settings", "data": settings})
+
+async def save_user(user_id, data):
+    await users_col.update_one({"_id": user_id}, {"$set": data}, upsert=True)
+
+async def save_token(token, data):
+    await tokens_col.update_one({"_id": token}, {"$set": data}, upsert=True)
+
+async def save_apps():
+    await apps_col.delete_many({})
+    if apps:
+        await apps_col.insert_many(apps)
+
+async def save_channels():
+    await channels_col.delete_many({})
+    if channels:
+        await channels_col.insert_many(channels)
+
+async def save_settings():
+    await settings_col.update_one({"_id": "settings"}, {"$set": {"data": settings}}, upsert=True)
 
 # ---------- Helper Functions ----------
 def shorten_url(long_url: str) -> str:
@@ -178,7 +234,6 @@ def get_file_type_from_url(url: str) -> str:
         return "other"
 
 async def process_media(update: Update, context: ContextTypes.DEFAULT_TYPE, url_token: str, waiting_msg):
-    user_id = update.effective_user.id
     try:
         resp = requests.get(f"{MEDIA_API_URL}?urltoken={url_token}&token=Anuj%40%23%E2%82%B9_%26123", timeout=10)
         data = resp.json()
@@ -212,11 +267,13 @@ async def process_media(update: Update, context: ContextTypes.DEFAULT_TYPE, url_
         button = InlineKeyboardMarkup([[InlineKeyboardButton("📁 View File", url=media_url)]])
         await waiting_msg.edit_text("📁 Your media is ready.", reply_markup=button)
 
+# ---------- /start handler ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     first_name = update.effective_user.first_name
     raw_text = update.message.text.strip()
 
+    # Media deep link
     if raw_text.startswith("/start url_token_"):
         parts = raw_text.split()
         if len(parts) > 1:
@@ -230,6 +287,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await process_media(update, context, url_token, waiting_msg)
                 return
 
+    # Referral deep link
     has_ref = raw_text.startswith("/start ref_")
     ref_user_id_str = None
     token = None
@@ -242,20 +300,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if len(ref_parts) == 2:
                     ref_user_id_str, token = ref_parts
 
+    # Force join check
     if channels:
         if not await check_joined(context, user_id):
             msg = "🚫 You must join all our official channels to use the bot.\nPlease join the channels below and then click ✅ I've Joined."
             await update.message.reply_text(msg, reply_markup=join_keyboard())
             return
 
+    # Register or welcome back
     if user_id not in users:
         users[user_id] = {"first_name": first_name, "points": 5}
+        await save_user(user_id, {"first_name": first_name, "points": 5})
         welcome = f"👋 Welcome to <b>StudyOne Manager Bot</b>, {first_name}!\n🎁 You have received <b>5 free points</b>.\nUse them wisely! Choose an option below:"
         await update.message.reply_text(welcome, parse_mode="HTML", reply_markup=main_menu_keyboard())
     else:
         users[user_id]["first_name"] = first_name
+        await save_user(user_id, {"first_name": first_name})  # update name
         await update.message.reply_text(f"👋 Welcome back, {first_name}!", reply_markup=main_menu_keyboard())
 
+    # Process referral
     if has_ref and ref_user_id_str and token:
         try:
             ref_user_id = int(ref_user_id_str)
@@ -265,13 +328,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tkn_data = tokens[token]
             if not tkn_data["used"] and tkn_data["user_id"] == ref_user_id and ref_user_id == user_id:
                 tkn_data["used"] = True
+                await save_token(token, {"user_id": ref_user_id, "used": True})
                 users[user_id]["points"] += 5
+                await save_user(user_id, {"points": users[user_id]["points"]})
                 await update.message.reply_text("🎉 <b>+5 points</b> added to your balance!", parse_mode="HTML")
             else:
                 await update.message.reply_text("❌ Link already used or invalid.")
         else:
             await update.message.reply_text("❌ Link already used or invalid.")
 
+# ---------- Check join callback ----------
 async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -281,6 +347,7 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         first_name = query.from_user.first_name
         if user_id not in users:
             users[user_id] = {"first_name": first_name, "points": 5}
+            await save_user(user_id, {"first_name": first_name, "points": 5})
             await context.bot.send_message(
                 user_id,
                 f"👋 Welcome to <b>StudyOne Manager Bot</b>, {first_name}!\n🎁 You have received <b>5 free points</b>.\nChoose an option below:",
@@ -289,10 +356,12 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
         else:
             users[user_id]["first_name"] = first_name
+            await save_user(user_id, {"first_name": first_name})
             await context.bot.send_message(user_id, f"👋 Welcome back, {first_name}!", reply_markup=main_menu_keyboard())
     else:
         await query.answer("❌ You haven't joined all channels yet. Please join them first.", show_alert=True)
 
+# ---------- Main menu callbacks ----------
 async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -312,6 +381,7 @@ async def points_get_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id
     token = generate_token()
     tokens[token] = {"user_id": user_id, "used": False}
+    await save_token(token, {"user_id": user_id, "used": False})
     deep_link = f"https://t.me/{context.bot.username}?start=ref_{user_id}_{token}"
     short = shorten_url(deep_link)
 
@@ -336,6 +406,7 @@ async def points_back_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await points_menu_callback(update, context)
 
+# ---------- Key system ----------
 async def key_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -377,6 +448,7 @@ async def receive_device_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         formatted = f"❌ Error: {e}"
 
     users[user_id]["points"] = max(0, user["points"] - 5)
+    await save_user(user_id, {"points": users[user_id]["points"]})
     await update.message.reply_text(
         f"✅ <b>Key Generated!</b>\n\n{formatted}\n\nYour new balance: {users[user_id]['points']} points.",
         parse_mode="HTML",
@@ -388,6 +460,7 @@ async def key_conv_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Key generation cancelled.")
     return ConversationHandler.END
 
+# ---------- Apps ----------
 async def apps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -396,6 +469,7 @@ async def apps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.edit_message_text("📱 Available Apps:", reply_markup=apps_keyboard())
 
+# ---------- Admin panel ----------
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -406,6 +480,7 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     await query.edit_message_text("🔧 <b>Admin Panel</b>", parse_mode="HTML", reply_markup=admin_keyboard())
 
+# --- Admin Apps ---
 async def admin_apps_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -432,6 +507,7 @@ async def admin_add_app_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def admin_add_app_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = context.user_data.pop("app_name")
     apps.append({"name": name, "url": update.message.text})
+    await save_apps()
     await update.message.reply_text(f"✅ App <b>{name}</b> added successfully.", parse_mode="HTML", reply_markup=admin_back_panel_kb())
     return ConversationHandler.END
 
@@ -450,6 +526,7 @@ async def admin_del_app(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     idx = int(query.data.split("_")[1])
     removed = apps.pop(idx)
+    await save_apps()
     await query.edit_message_text(f"❌ Removed <b>{removed['name']}</b>.", parse_mode="HTML", reply_markup=admin_back_panel_kb())
 
 async def admin_list_apps(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -461,6 +538,7 @@ async def admin_list_apps(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "No apps."
     await query.edit_message_text(text, reply_markup=admin_back_panel_kb())
 
+# --- Admin Shortner ---
 async def admin_shortner_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -486,6 +564,7 @@ async def edit_shortner_start(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def edit_shortner_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     field = context.user_data.pop("setting_field")
     settings[field] = update.message.text.strip()
+    await save_settings()
     await update.message.reply_text(f"✅ <b>{field}</b> updated successfully.", parse_mode="HTML", reply_markup=admin_back_panel_kb())
     return ConversationHandler.END
 
@@ -497,9 +576,11 @@ async def set_tutorial_url_start(update: Update, context: ContextTypes.DEFAULT_T
 
 async def set_tutorial_url_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings["tutorial_url"] = update.message.text.strip()
+    await save_settings()
     await update.message.reply_text("✅ Tutorial URL saved.", reply_markup=admin_back_panel_kb())
     return ConversationHandler.END
 
+# --- Admin Key ---
 async def admin_key_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -520,6 +601,7 @@ async def receive_key_validity(update: Update, context: ContextTypes.DEFAULT_TYP
     try:
         hours = int(update.message.text)
         settings["key_validity"] = hours
+        await save_settings()
         await update.message.reply_text(f"✅ Key validity set to <b>{hours} hours</b>.", parse_mode="HTML", reply_markup=admin_back_panel_kb())
     except ValueError:
         await update.message.reply_text("❌ Invalid number. Cancelled.", reply_markup=admin_back_panel_kb())
@@ -554,6 +636,7 @@ async def premium_validity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}", reply_markup=admin_back_panel_kb())
     return ConversationHandler.END
 
+# --- Admin Analytics ---
 async def admin_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -581,6 +664,7 @@ async def admin_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await query.edit_message_text(f"❌ Error: {e}", reply_markup=admin_back_panel_kb())
 
+# --- Admin Force Join ---
 async def admin_forcejoin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -618,6 +702,7 @@ async def fj_add_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = context.user_data.pop("fj_name")
     ch_id = context.user_data.pop("fj_id")
     channels.append({"id": ch_id, "url": update.message.text, "name": name})
+    await save_channels()
     await update.message.reply_text(f"✅ Channel <b>{name}</b> added.", parse_mode="HTML", reply_markup=admin_back_panel_kb())
     return ConversationHandler.END
 
@@ -657,6 +742,7 @@ async def fj_edit_newurl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channels[idx]["url"] = update.message.text
     else:
         context.user_data.pop("edit_idx", None)
+    await save_channels()
     await update.message.reply_text("✅ Channel updated.", reply_markup=admin_back_panel_kb())
     return ConversationHandler.END
 
@@ -675,6 +761,7 @@ async def fj_del_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     idx = int(query.data.split("_")[1])
     removed = channels.pop(idx)
+    await save_channels()
     await query.edit_message_text(f"❌ Removed <b>{removed['name']}</b>.", parse_mode="HTML", reply_markup=admin_back_panel_kb())
 
 async def fj_list_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -686,6 +773,7 @@ async def fj_list_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "No channels."
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=admin_back_panel_kb())
 
+# --- Admin Broadcast ---
 async def admin_broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -717,22 +805,22 @@ class HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-# ---------- Main entry (FIXED) ----------
-def main():
-    # Start health server
+# ---------- Main entry ----------
+async def main_async():
+    # Load data from MongoDB into caches
+    await load_data_from_db()
+    print("Data loaded from MongoDB")
+
+    # Start health server in background thread
     Thread(target=run_health_server, daemon=True).start()
 
-    # Create and set event loop for Python 3.14+
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    print("Bot is starting...")
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # ----- Add all handlers (unchanged) -----
+    # Command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_command))
 
+    # Callback handlers
     application.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
     application.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main_menu$"))
     application.add_handler(CallbackQueryHandler(points_menu_callback, pattern="^menu_points$"))
@@ -757,12 +845,12 @@ def main():
     application.add_handler(CallbackQueryHandler(fj_del_channel, pattern="^delch_"))
     application.add_handler(CallbackQueryHandler(fj_list_channels, pattern="^fj_list$"))
 
-    # Conversation handlers
+    # Conversation handlers with per_message=True to avoid warnings
     conv_key = ConversationHandler(
         entry_points=[CallbackQueryHandler(key_get_callback, pattern="^key_get$")],
         states={STATE_KEY_DEVICE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_device_id)]},
         fallbacks=[MessageHandler(filters.COMMAND, key_conv_fallback)],
-        per_message=True,  # suppress warning
+        per_message=True,
     )
     application.add_handler(conv_key)
 
@@ -847,9 +935,15 @@ def main():
     )
     application.add_handler(conv_tutorial)
 
-    # Run the bot using the explicit event loop
+    # Start polling
+    await application.run_polling()
+
+def main():
+    # Create and set event loop for Python 3.14+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(application.run_polling())
+        loop.run_until_complete(main_async())
     finally:
         loop.close()
 
