@@ -796,18 +796,22 @@ async def admin_broadcast_content(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text(f"✅ Broadcast sent to <b>{sent}</b> users.", parse_mode="HTML", reply_markup=admin_back_panel_kb())
     return ConversationHandler.END
 
-# ---------- Main Entry Point (Fixed) ----------
+# ---------- Main Entry Point (Fixed for Python 3.14) ----------
 def main():
-    # Start health server in background thread
+    # Create and set a new event loop for the main thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Start health server in background thread (doesn't need asyncio)
     Thread(target=run_health_server, daemon=True).start()
     
-    # Load data from MongoDB (synchronous call using asyncio.run)
-    asyncio.run(load_data_from_db())
+    # Load data synchronously using the loop
+    loop.run_until_complete(load_data_from_db())
     
     # Build the application
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # ----- Add all handlers -----
+    # ----- Add all handlers (same as before) -----
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_command))
     
@@ -835,12 +839,11 @@ def main():
     application.add_handler(CallbackQueryHandler(fj_del_channel, pattern="^delch_"))
     application.add_handler(CallbackQueryHandler(fj_list_channels, pattern="^fj_list$"))
     
-    # Conversation handlers
+    # Conversation handlers (without per_message=True to avoid warnings)
     conv_key = ConversationHandler(
         entry_points=[CallbackQueryHandler(key_get_callback, pattern="^key_get$")],
         states={STATE_KEY_DEVICE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_device_id)]},
         fallbacks=[MessageHandler(filters.COMMAND, key_conv_fallback)],
-        per_message=True,
     )
     application.add_handler(conv_key)
     
@@ -851,7 +854,6 @@ def main():
             STATE_ADMIN_ADD_APP_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_app_url)],
         },
         fallbacks=[],
-        per_message=True,
     )
     application.add_handler(conv_add_app)
     
@@ -862,7 +864,6 @@ def main():
         ],
         states={STATE_ADMIN_EDIT_SETTING_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_shortner_value)]},
         fallbacks=[],
-        per_message=True,
     )
     application.add_handler(conv_edit_shortner)
     
@@ -870,7 +871,6 @@ def main():
         entry_points=[CallbackQueryHandler(set_key_validity, pattern="^key_validity$")],
         states={STATE_ADMIN_KEY_VALIDITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_key_validity)]},
         fallbacks=[],
-        per_message=True,
     )
     application.add_handler(conv_key_validity)
     
@@ -882,7 +882,6 @@ def main():
             STATE_PREMIUM_VALIDITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, premium_validity)],
         },
         fallbacks=[],
-        per_message=True,
     )
     application.add_handler(conv_premium)
     
@@ -894,7 +893,6 @@ def main():
             STATE_FJ_ADD_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, fj_add_url)],
         },
         fallbacks=[],
-        per_message=True,
     )
     application.add_handler(conv_fj_add)
     
@@ -905,7 +903,6 @@ def main():
             STATE_FJ_EDIT_NEWURL: [MessageHandler(filters.TEXT & ~filters.COMMAND, fj_edit_newurl)],
         },
         fallbacks=[],
-        per_message=True,
     )
     application.add_handler(conv_fj_edit)
     
@@ -913,7 +910,6 @@ def main():
         entry_points=[CallbackQueryHandler(admin_broadcast_start, pattern="^admin_broadcast$")],
         states={STATE_BROADCAST: [MessageHandler(filters.ALL, admin_broadcast_content)]},
         fallbacks=[],
-        per_message=True,
     )
     application.add_handler(conv_broadcast)
     
@@ -921,11 +917,10 @@ def main():
         entry_points=[CallbackQueryHandler(set_tutorial_url_start, pattern="^set_tutorial_url$")],
         states={STATE_TUTORIAL_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_tutorial_url_value)]},
         fallbacks=[],
-        per_message=True,
     )
     application.add_handler(conv_tutorial)
     
-    # Start polling (blocking, manages its own event loop)
+    # Start polling (synchronous, will use the existing loop)
     logger.info("Starting bot polling...")
     application.run_polling()
 
