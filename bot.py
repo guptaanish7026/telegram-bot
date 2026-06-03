@@ -5,6 +5,7 @@ import string
 import json
 import base64
 import logging
+import asyncio  # <-- ADDED
 import requests
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -34,19 +35,19 @@ SHORTNER_URL = os.getenv("SHORTNER_URL", "https://vplink.in/api")
 SHORTNER_API = os.getenv("SHORTNER_API", "6351aaa9474766bb1f8575ba24a9897c2761985f")
 
 # ---------- Global Storage ----------
-users = {}                # user_id -> {"first_name": ..., "points": ...}
-tokens = {}               # token -> {"user_id": ..., "used": False}
-apps = []                 # [{"name":..., "url":...}]
-channels = [              # default force join channels (id, url, name)
+users = {}
+tokens = {}
+apps = []
+channels = [
     {"id": "-1003742727969", "url": "https://t.me/+OSTuiUllTBE5NmU1", "name": "Channel 1"},
     {"id": "-1003939389021", "url": "https://t.me/+kqvEmz3m4m4yZGI1", "name": "Channel 2"},
     {"id": "-1003492884064", "url": "https://t.me/+O7UlwkJ7YA83YTU1", "name": "Channel 3"},
 ]
 settings = {
-    "key_validity": 24,                # hours
+    "key_validity": 24,
     "shortner_url": SHORTNER_URL,
     "shortner_api": SHORTNER_API,
-    "tutorial_url": "",                # URL to redirect user for tutorial
+    "tutorial_url": "",
 }
 
 # ---------- Conversation states ----------
@@ -94,21 +95,17 @@ async def check_joined(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool
 
 def join_keyboard() -> InlineKeyboardMarkup:
     kb = []
-    for i, ch in enumerate(channels):
+    for ch in channels:
         kb.append([InlineKeyboardButton(f"🔗 Join {ch['name']}", url=ch["url"])])
     kb.append([InlineKeyboardButton("✅ I've Joined", callback_data="check_join")])
     return InlineKeyboardMarkup(kb)
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("⭐ Points", callback_data="menu_points"),
-            InlineKeyboardButton("🔑 Key", callback_data="menu_key"),
-        ],
-        [
-            InlineKeyboardButton("💬 Support", url="https://t.me/StudyOne_Support_Bot"),
-            InlineKeyboardButton("📱 Apps", callback_data="menu_apps"),
-        ],
+        [InlineKeyboardButton("⭐ Points", callback_data="menu_points"),
+         InlineKeyboardButton("🔑 Key", callback_data="menu_key")],
+        [InlineKeyboardButton("💬 Support", url="https://t.me/StudyOne_Support_Bot"),
+         InlineKeyboardButton("📱 Apps", callback_data="menu_apps")],
     ])
 
 def points_menu_keyboard() -> InlineKeyboardMarkup:
@@ -132,18 +129,12 @@ def apps_keyboard() -> InlineKeyboardMarkup:
 
 def admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("📦 Apps", callback_data="admin_apps"),
-            InlineKeyboardButton("🔗 Shortner", callback_data="admin_shortner"),
-        ],
-        [
-            InlineKeyboardButton("🔑 Key", callback_data="admin_key"),
-            InlineKeyboardButton("📊 Analytics", callback_data="admin_analytics"),
-        ],
-        [
-            InlineKeyboardButton("🔒 Force Join", callback_data="admin_forcejoin"),
-            InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
-        ],
+        [InlineKeyboardButton("📦 Apps", callback_data="admin_apps"),
+         InlineKeyboardButton("🔗 Shortner", callback_data="admin_shortner")],
+        [InlineKeyboardButton("🔑 Key", callback_data="admin_key"),
+         InlineKeyboardButton("📊 Analytics", callback_data="admin_analytics")],
+        [InlineKeyboardButton("🔒 Force Join", callback_data="admin_forcejoin"),
+         InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
         [InlineKeyboardButton("⬅️ Back", callback_data="main_menu")],
     ])
 
@@ -153,7 +144,6 @@ def admin_back_panel_kb() -> InlineKeyboardMarkup:
 def generate_token(length=8) -> str:
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
-# ---------- Format JSON response ----------
 def format_key_response(raw: str) -> str:
     try:
         data = json.loads(raw)
@@ -187,7 +177,6 @@ def get_file_type_from_url(url: str) -> str:
     else:
         return "other"
 
-# ---------- Media processing ----------
 async def process_media(update: Update, context: ContextTypes.DEFAULT_TYPE, url_token: str, waiting_msg):
     user_id = update.effective_user.id
     try:
@@ -208,7 +197,6 @@ async def process_media(update: Update, context: ContextTypes.DEFAULT_TYPE, url_
         return
 
     file_type = get_file_type_from_url(media_url)
-
     if file_type == "video":
         encoded = base64.b64encode(media_url.encode()).decode()
         player_url = f"https://study-one-stream.base44.app/player?data={encoded}"
@@ -224,7 +212,6 @@ async def process_media(update: Update, context: ContextTypes.DEFAULT_TYPE, url_
         button = InlineKeyboardMarkup([[InlineKeyboardButton("📁 View File", url=media_url)]])
         await waiting_msg.edit_text("📁 Your media is ready.", reply_markup=button)
 
-# ---------- /start handler ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     first_name = update.effective_user.first_name
@@ -262,10 +249,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     if user_id not in users:
-        users[user_id] = {
-            "first_name": first_name,
-            "points": 5,
-        }
+        users[user_id] = {"first_name": first_name, "points": 5}
         welcome = f"👋 Welcome to <b>StudyOne Manager Bot</b>, {first_name}!\n🎁 You have received <b>5 free points</b>.\nUse them wisely! Choose an option below:"
         await update.message.reply_text(welcome, parse_mode="HTML", reply_markup=main_menu_keyboard())
     else:
@@ -288,7 +272,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ Link already used or invalid.")
 
-# ---------- Check join callback ----------
 async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -310,7 +293,6 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await query.answer("❌ You haven't joined all channels yet. Please join them first.", show_alert=True)
 
-# ---------- Main menu callbacks ----------
 async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -354,7 +336,6 @@ async def points_back_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await points_menu_callback(update, context)
 
-# ---------- Key system ----------
 async def key_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -407,7 +388,6 @@ async def key_conv_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Key generation cancelled.")
     return ConversationHandler.END
 
-# ---------- Apps ----------
 async def apps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -416,7 +396,6 @@ async def apps_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.edit_message_text("📱 Available Apps:", reply_markup=apps_keyboard())
 
-# ---------- Admin panel ----------
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -427,7 +406,6 @@ async def admin_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
     await query.edit_message_text("🔧 <b>Admin Panel</b>", parse_mode="HTML", reply_markup=admin_keyboard())
 
-# --- Admin Apps ---
 async def admin_apps_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -483,7 +461,6 @@ async def admin_list_apps(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "No apps."
     await query.edit_message_text(text, reply_markup=admin_back_panel_kb())
 
-# --- Admin Link Shortner ---
 async def admin_shortner_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -523,7 +500,6 @@ async def set_tutorial_url_value(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text("✅ Tutorial URL saved.", reply_markup=admin_back_panel_kb())
     return ConversationHandler.END
 
-# --- Admin Key ---
 async def admin_key_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -578,7 +554,6 @@ async def premium_validity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}", reply_markup=admin_back_panel_kb())
     return ConversationHandler.END
 
-# --- Admin Analytics ---
 async def admin_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -606,7 +581,6 @@ async def admin_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await query.edit_message_text(f"❌ Error: {e}", reply_markup=admin_back_panel_kb())
 
-# --- Admin Force Join ---
 async def admin_forcejoin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -712,7 +686,6 @@ async def fj_list_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "No channels."
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=admin_back_panel_kb())
 
-# --- Admin Broadcast ---
 async def admin_broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -730,7 +703,7 @@ async def admin_broadcast_content(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text(f"✅ Broadcast sent to <b>{sent}</b> users.", parse_mode="HTML", reply_markup=admin_back_panel_kb())
     return ConversationHandler.END
 
-# ---------- Health server for Render ----------
+# ---------- Health server ----------
 def run_health_server():
     port = int(os.environ.get("PORT", 8000))
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
@@ -742,22 +715,24 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"OK")
     def log_message(self, format, *args):
-        # Suppress health check logs
         pass
 
-# ---------- Main entry ----------
+# ---------- Main entry (FIXED) ----------
 def main():
-    # Start the health server in a background thread
+    # Start health server
     Thread(target=run_health_server, daemon=True).start()
+
+    # Create and set event loop for Python 3.14+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     print("Bot is starting...")
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Command handlers
+    # ----- Add all handlers (unchanged) -----
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_command))
 
-    # Callback handlers
     application.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
     application.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main_menu$"))
     application.add_handler(CallbackQueryHandler(points_menu_callback, pattern="^menu_points$"))
@@ -785,10 +760,9 @@ def main():
     # Conversation handlers
     conv_key = ConversationHandler(
         entry_points=[CallbackQueryHandler(key_get_callback, pattern="^key_get$")],
-        states={
-            STATE_KEY_DEVICE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_device_id)],
-        },
+        states={STATE_KEY_DEVICE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_device_id)]},
         fallbacks=[MessageHandler(filters.COMMAND, key_conv_fallback)],
+        per_message=True,  # suppress warning
     )
     application.add_handler(conv_key)
 
@@ -799,6 +773,7 @@ def main():
             STATE_ADMIN_ADD_APP_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_app_url)],
         },
         fallbacks=[],
+        per_message=True,
     )
     application.add_handler(conv_add_app)
 
@@ -807,19 +782,17 @@ def main():
             CallbackQueryHandler(edit_shortner_start, pattern="^edit_shortner_url$"),
             CallbackQueryHandler(edit_shortner_start, pattern="^edit_shortner_api$"),
         ],
-        states={
-            STATE_ADMIN_EDIT_SETTING_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_shortner_value)],
-        },
+        states={STATE_ADMIN_EDIT_SETTING_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_shortner_value)]},
         fallbacks=[],
+        per_message=True,
     )
     application.add_handler(conv_edit_shortner)
 
     conv_key_validity = ConversationHandler(
         entry_points=[CallbackQueryHandler(set_key_validity, pattern="^key_validity$")],
-        states={
-            STATE_ADMIN_KEY_VALIDITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_key_validity)],
-        },
+        states={STATE_ADMIN_KEY_VALIDITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_key_validity)]},
         fallbacks=[],
+        per_message=True,
     )
     application.add_handler(conv_key_validity)
 
@@ -831,6 +804,7 @@ def main():
             STATE_PREMIUM_VALIDITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, premium_validity)],
         },
         fallbacks=[],
+        per_message=True,
     )
     application.add_handler(conv_premium)
 
@@ -842,6 +816,7 @@ def main():
             STATE_FJ_ADD_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, fj_add_url)],
         },
         fallbacks=[],
+        per_message=True,
     )
     application.add_handler(conv_fj_add)
 
@@ -852,28 +827,31 @@ def main():
             STATE_FJ_EDIT_NEWURL: [MessageHandler(filters.TEXT & ~filters.COMMAND, fj_edit_newurl)],
         },
         fallbacks=[],
+        per_message=True,
     )
     application.add_handler(conv_fj_edit)
 
     conv_broadcast = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_broadcast_start, pattern="^admin_broadcast$")],
-        states={
-            STATE_BROADCAST: [MessageHandler(filters.ALL, admin_broadcast_content)],
-        },
+        states={STATE_BROADCAST: [MessageHandler(filters.ALL, admin_broadcast_content)]},
         fallbacks=[],
+        per_message=True,
     )
     application.add_handler(conv_broadcast)
 
     conv_tutorial = ConversationHandler(
         entry_points=[CallbackQueryHandler(set_tutorial_url_start, pattern="^set_tutorial_url$")],
-        states={
-            STATE_TUTORIAL_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_tutorial_url_value)],
-        },
+        states={STATE_TUTORIAL_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_tutorial_url_value)]},
         fallbacks=[],
+        per_message=True,
     )
     application.add_handler(conv_tutorial)
 
-    application.run_polling()
+    # Run the bot using the explicit event loop
+    try:
+        loop.run_until_complete(application.run_polling())
+    finally:
+        loop.close()
 
 if __name__ == "__main__":
     main()
