@@ -558,7 +558,7 @@ async def admin_shortner_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def edit_shortner_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    field = query.data.split("_", 2)[2]
+    field = query.data.split("_", 2)[2]  # edit_shortner_url -> "url" or "api"
     context.user_data["setting_field"] = field
     current = settings.get(field, "")
     example = "https://your-shortner.com/api" if "url" in field else "abc123apikey"
@@ -811,10 +811,11 @@ def main():
     # Build the application
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # ----- Add all handlers (same as before) -----
+    # Command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_command))
     
+    # Callback query handlers
     application.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
     application.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main_menu$"))
     application.add_handler(CallbackQueryHandler(points_menu_callback, pattern="^menu_points$"))
@@ -839,7 +840,7 @@ def main():
     application.add_handler(CallbackQueryHandler(fj_del_channel, pattern="^delch_"))
     application.add_handler(CallbackQueryHandler(fj_list_channels, pattern="^fj_list$"))
     
-    # Conversation handlers (without per_message=True to avoid warnings)
+    # Conversation handlers
     conv_key = ConversationHandler(
         entry_points=[CallbackQueryHandler(key_get_callback, pattern="^key_get$")],
         states={STATE_KEY_DEVICE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_device_id)]},
@@ -920,7 +921,7 @@ def main():
     )
     application.add_handler(conv_tutorial)
     
-    # Start polling (synchronous, will use the existing loop)
+    # Start polling
     logger.info("Starting bot polling...")
     application.run_polling()
 
